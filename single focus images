@@ -1,0 +1,214 @@
+% =========================================================================
+% extractSharpestFrames.m
+% --------------------------------------------------------------
+% Ziel   : Für jedes MP4‑Video in einem Ordner den Frame mit höchster
+%          Schärfe (Kombination aus Grauwert‑Amplitude + Varianz) finden,
+%          als PNG speichern und einen Überblick in einer Excel‑Tabelle
+%          erzeugen.
+%          Zusätzlich wird ein Log‑File angelegt, das alle Infos /
+%          Fehlermeldungen enthält.
+% --------------------------------------------------------------
+% Hinweis :    
+%   - Das Skript nutzt die moderne Frame‑Iteration (hasFrame / readFrame)
+%     → robust gegenüber variabler Bildrate (VFR) und veralteten
+%       NumberOfFrames‑Eigenschaften.
+%   - Optional können Sie Parallelisierung aktivieren (Parallel Computing
+%     Toolbox). Dafür einfach `useParallel = true;` setzen.
+%   - Die Schärfe‑Metrik ist hier:   score = wAmp*Amplitude + wVar*Varianz
+%   - Das gespeicherte Bild ist das Original‑RGB‑Bild (farbig). Wenn Sie
+%     lieber ein Graustufen‑Bild möchten, ändern Sie die `imwrite`‑Zeile.
+% =========================================================================
+
+clear;  clc;  close all;
+
+%% 1. Ordner mit Videos auswählen -------------------------------------------------
+folder = uigetdir(pwd, 'Bitte Ordner mit Videos auswählen');
+if isequal(folder,0) || isempty(folder)
+    error('Kein Ordner ausgewählt – Abbruch.');
+end
+
+%% 2. MP4‑Dateien im Ordner finden -------------------------------------------------
+videoFiles = dir(fullfile(folder, '*.mp4'));
+if isempty(videoFiles)
+    error('Keine MP4‑Videos im ausgewählten Ordner gefunden.');
+end
+
+%% 3. Ausgabe‑Ordner für die besten Frames anlegen --------------------------------
+outFolder = fullfile(folder, 'SchärfsteFrames');
+if ~exist(outFolder,'dir')
+    mkdir(outFolder);
+end
+
+%% 4. Gewichtung für die kombinierte Schärfe‑Metrik (nach Belieben anpassen) -------
+weightAmplitude = 0.6;   % Anteil Amplitude (0…1)
+weightVariance  = 0.4;   % Anteil Varianz    (0…1)
+
+%% 5. Ergebnis‑Struktur (später in Excel) -----------------------------------------
+results = struct('VideoName', {}, ...
+                 'BestFrameIdx', {}, ...
+                 'BestScore', {}, ...
+                 'BestFrameFile', {});   %#ok<*NASGU>
+
+%% 6. Log‑Datei anlegen ------------------------------------------------------------
+logFile = fullfile(folder, 'SchärfsteFrames_Log.txt');
+logID   = fopen(logFile,'w');
+fprintf(logID,'--- Schärfste‑Frames Log (%s) ---\n', datestr(now));
+
+%% 7. Parallelisierung (optional) -------------------------------------------------
+useParallel = false;                     % <- bei Bedarf auf true setzen
+if useParallel
+    % Öffnet einen lokalen Parallel‑Pool, falls keiner läuft
+    if isempty(gcp('nocreate'))
+        parpool('local');
+    end
+end
+
+%% 8. Verarbeitung sämtlicher Videos ------------------------------------------------
+if useParallel
+    % --------------------------- PARALLEL ---------------------------
+    parfor i = 1:numel(videoFiles)   %#ok<*PFBNS>
+        results(i) = processSingleVideo( ...
+            fullfile(folder, videoFiles(i).name), ...
+            outFolder, weightAmplitude, weightVariance, logID);
+    end
+else
+    % -------------------------- SERIELL ---------------------------
+    for i = 1:numel(videoFiles)
+        results(i) = processSingleVideo( ...
+            fullfile(folder, videoFiles(i).name), ...
+            outFolder, weightAmplitude, weightVariance, logID);
+    end
+end
+
+%% 9. Log‑Datei schließen -----------------------------------------------------------
+fclose(logID);
+
+%% 10. Excel‑Tabelle erzeugen -------------------------------------------------------
+excelFile = fullfile(folder, 'SchärfsteFrames_Übersicht.xlsx');
+tbl = struct2table(results);
+writetable(tbl, excelFile, 'WriteVariableNames', true);
+
+%% 11. Abschlussausgabe ------------------------------------------------------------
+fprintf('\n✅ Verarbeitung abgeschlossen.\n');
+fprintf('✅ Gespeicherte schärfste Frames: %s\n', outFolder);
+fprintf('✅ Ergebnis‑Tabelle (Excel):      %s\n', excelFile);
+fprintf('✅ Log‑Datei:                     %s\n', logFile);
+
+
+% =========================================================================
+% ==================== FUNKTIONSBLOCK: Einzelnes Video =====================
+% =========================================================================
+function result = processSingleVideo(videoPath, outFolder, wAmp, wVar, logID)
+% ---------------------------------------------------------------
+% Eingaben
+%   videoPath : voller Pfad zur MP4‑Datei
+%   outFolder : Zielordner für das Bild
+%   wAmp,wVar : Gewichtungen für Amplitude und Varianz
+%   logID    : File‑Identifier zum Schreiben ins Log (kann [] sein)
+%
+% Ausgabe
+%   result   : Struktur mit Feldern
+%              VideoName, BestFrameIdx, BestScore, BestFrameFile
+% ---------------------------------------------------------------
+
+    [~, name, ext] = fileparts(videoPath);
+    videoName      = [name, ext];               % z. B. "myClip.mp4"
+
+    % --------- Log‑Eintrag (Start) ----------
+    if ~isempty(logID)
+        fprintf(logID,'\nVideo: %s\n', videoName);
+    end
+    fprintf('Verarbeite Video: %s\n', videoName);
+
+    % --------- Video öffnen ----------
+    try
+        vR = VideoReader(videoPath);
+    catch ME
+        warning('Kann Video nicht öffnen: %s – %s', videoPath, ME.message);
+        if ~isempty(logID)
+            fprintf(logID,'  >> KANN NICHT GEÖFFNET WERDEN: %s\n', ME.message);
+        end
+        result = struct('VideoName', videoName, ...
+                        'BestFrameIdx', NaN, ...
+                        'BestScore', NaN, ...
+                        'BestFrameFile', '');
+        return;
+    end
+
+    % --------- Initialisierung ----------
+    bestScore    = -inf;     % jeder reale Score ist größer
+    bestIdx      = NaN;
+    bestFrameRGB = [];      % Original‑RGB‑Bild des besten Frames
+    frameCnt     = 0;        % Zähler für Logging
+
+    % --------- Frame‑Schleife ----------
+    while hasFrame(vR)
+        try
+            % 1. Frame einlesen
+            frameRGB = readFrame(vR);               % uint8 RGB
+            frameGray = rgb2gray(frameRGB);         % uint8 → Graustufen
+            frameGray = im2double(frameGray);       % [0,1] double
+
+            % 2. Schärfe‑Parameter
+            amplitude = max(frameGray(:)) - min(frameGray(:));
+            variance  = var(frameGray(:));
+
+            % 3. Kombinierte Schärfe‑Metrik  (korrekte Syntax!)
+            score = wAmp * amplitude + wVar * variance;
+
+            % 4. Bester Frame ermitteln
+            if score > bestScore
+                bestScore    = score;
+                bestIdx      = frameCnt + 1;   % 1‑basiert (MATLAB‑Konvention)
+                bestFrameRGB = frameRGB;       % Original‑Farbe sichern
+            end
+
+            frameCnt = frameCnt + 1;          % Zähler erhöhen
+
+        catch ME
+            warning('Fehler bei Frame %d in %s – %s', frameCnt+1, videoPath, ME.message);
+            if ~isempty(logID)
+                fprintf(logID,'  >> Frame %d: %s\n', frameCnt+1, ME.message);
+            end
+            frameCnt = frameCnt + 1;   % trotzdem weiterzählen
+        end
+    end
+
+    % --------- Kein Frame gefunden? ----------
+    if isempty(bestFrameRGB)
+        warning('Kein lesbarer Frame gefunden in %s', videoPath);
+        if ~isempty(logID)
+            fprintf(logID,'  >> KEIN LESBARER FRAME GEFUNDEN.\n');
+        end
+        result = struct('VideoName', videoName, ...
+                        'BestFrameIdx', NaN, ...
+                        'BestScore', NaN, ...
+                        'BestFrameFile', '');
+        return;
+    end
+
+    % --------- Bild speichern ----------
+    outFile = fullfile(outFolder, sprintf('%s_schaerfsterFrame.png', name));
+    try
+        imwrite(bestFrameRGB, outFile, 'png');   % RGB‑Bild als PNG
+    catch ME
+        warning('Fehler beim Schreiben von %s – %s', outFile, ME.message);
+        if ~isempty(logID)
+            fprintf(logID,'  >> SCHREIBFEHLER: %s\n', ME.message);
+        end
+        outFile = '';  % falls Schreiben fehlschlug
+    end
+
+    % --------- Log‑Eintrag (Ergebnis) ----------
+    if ~isempty(logID)
+        fprintf(logID,'  -> Bester Frame #: %d (Score = %.4f)\n', ...
+                bestIdx, bestScore);
+        fprintf(logID,'  -> Gespeichert unter: %s\n', outFile);
+    end
+
+    % --------- Ergebnis‑Struktur zurückgeben ----------
+    result = struct('VideoName', videoName, ...
+                    'BestFrameIdx', bestIdx, ...
+                    'BestScore', bestScore, ...
+                    'BestFrameFile', outFile);
+end

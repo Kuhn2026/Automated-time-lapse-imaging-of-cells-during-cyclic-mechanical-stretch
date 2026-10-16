@@ -10,7 +10,7 @@ The repository includes:
 - MATLAB code for post-processing the recorded image sequences to generate focused images from the acquired data.
 - Sample data-set
 
-The following DOI (XXX) provides access to a sample dataset showing wound closure in lung epithelial cells. 
+The following DOI (https://doi.org/10.5281/zenodo.23413589) provides access to a sample dataset showing wound closure in lung epithelial cells. 
 The raw videos can be used to test the focus selection algorithm in MATLAB. 
 In addition, the videos illustrate the conditions required for successful focus selection, including sufficient illumination, a uniform and dense cell distribution, and adequate image resolution.
 

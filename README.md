@@ -11,7 +11,7 @@ The repository includes:
 - Sample data-set
 
 The following DOI (https://doi.org/10.5281/zenodo.23413589) provides access to a sample dataset showing wound closure in lung epithelial cells. 
-The raw videos can be used to test the focus selection algorithm in MATLAB. The following DOI (https://doi.org/10.5281/zenodo.23417450) provides access to a sample dataset with viewer, scattered single cells (to test the code under different conditions). In addition, the videos illustrate the conditions required for successful focus selection, including sufficient illumination, a uniform and dense cell distribution, and adequate image resolution.
+The raw videos can be used to test the focus selection algorithm in MATLAB. The following DOI (https://doi.org/10.5281/zenodo.23417450) provides access to a sample dataset with fewer, scattered single cells (to test the code under different conditions). In addition, the videos illustrate the conditions required for successful focus selection, including sufficient illumination, a uniform and dense cell distribution, and adequate image resolution.
 
 # Requirements for Use
 
